@@ -273,7 +273,20 @@ def run():
     for repo in repositories:
         reg, stats = xwalk(repo)
         print reg.raw
-        record_id = client.save_record(reg.raw)
+
+        if reg.repo_url is None or reg.repo_url == "":
+            print "No Repository URL - skipping"
+            continue
+
+        existing = client.get_by_url(reg.repo_url)
+        record_id = None
+        if existing is not None:
+            print "updating ", existing.id
+            # this is a very basic merge - a more advanced version is probably required for this module
+            reg.merge_register(existing.raw) # taking the existing record as the authority
+            record_id = existing.id
+        record_id = client.save_record(reg.raw, record_id)
+
         print stats
         for stat in stats:
             client.save_statistic(stat, record_id)

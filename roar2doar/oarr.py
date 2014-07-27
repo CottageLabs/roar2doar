@@ -19,6 +19,63 @@ class OARRClient(object):
         except:
             return None
 
+    def _make_url_variants(self, url):
+        urls = [url]
+
+        # http -> https
+        n = []
+        for u in urls:
+            if u.startswith("http://"):
+                n.append("https" + u[4:])
+        urls = list(set(urls + n))
+
+        # https -> http
+        n = []
+        for u in urls:
+            if u.startswith("https://"):
+                n.append("http" + u[5:])
+        urls = list(set(urls + n))
+
+        # no prefix -> http and https
+        n = []
+        for u in urls:
+            if not u.startswith("http"):
+                n.append("http://" + u)
+                n.append("https://" + u)
+        urls = list(set(urls + n))
+
+        # remove trailing /
+        n = []
+        for u in urls:
+            if u.endswith("/"):
+                n.append(u[:-1])
+        urls = list(set(urls + n))
+
+        # add trailing /
+        n = []
+        for u in urls:
+            if not u.endswith("/"):
+                n.append(u + "/")
+        urls = list(set(urls + n))
+
+        return urls
+
+    def get_by_url(self, url):
+        variants = self._make_url_variants(url)
+        qry = {
+            "query":{
+                "terms": {
+                    "register.metadata.record.url.exact": variants
+                }
+            },
+            "size":1
+        }
+        data = self.query(qry)
+        records = [hit.get("_source") for hit in data.get("hits", {}).get("hits", [])]
+        if len(records) > 0:
+            return Register(records[0])
+        return None
+
     def save_record(self, record=None, record_id=""):
         record = {} if record is None else record
         if "id" in record and record_id == "":
@@ -28,13 +85,13 @@ class OARRClient(object):
             return False
 
         try:
-            if record_id == "":
+            if record_id == "" or record_id is None:
                 addr = self.base_url + "record?api_key=" + self.api_key
             else:
                 addr = self.base_url + "/record/" + record_id + '?api_key=' + self.api_key
             resp = requests.post(addr, data=json.dumps(record))
             if resp.json()["success"]:
-                if record_id == "": record_id = resp.json()["id"]
+                if record_id == "" or record_id is None: record_id = resp.json()["id"]
                 return record_id
             else:
                 return False
@@ -67,11 +124,10 @@ class OARRClient(object):
         except:
             return None
 
-    def query(self, qry={
-        'query':{'match_all':{}},
-        'size': 0,
-        'facets':{}
-    }):
+    def query(self, qry=None):
+        if qry is None:
+            qry = {'query':{'match_all':{}},'size': 0,'facets':{}}
+
         try:
             resp = requests.get(self.base_url + "/query?source=" + json.dumps(qry) )
             return resp.json()
@@ -86,6 +142,10 @@ class Register(object):
     @property
     def json(self):
         return json.dumps(self.raw)
+
+    @property
+    def id(self):
+        return self.raw.get("id")
 
     @property
     def register(self):
@@ -439,6 +499,17 @@ class Register(object):
         if info_uri.startswith("info:oarr:"):
             return info_uri[10:]
         return info_uri
+
+    def merge_register(self, new_reg):
+        # merge the top level elements in the register
+        register = new_reg.get("register", {})
+        for k, v in register.iteritems():
+            self.raw["register"][k] = deepcopy(v)
+
+        # overwrite/add the relevant admin entry
+        admin = new_reg.get("admin", {})
+        for k, v in admin.iteritems():
+            self.raw["admin"][k] = deepcopy(v)
 
 
 class Org(object):
