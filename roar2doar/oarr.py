@@ -19,7 +19,8 @@ class OARRClient(object):
         except:
             return None
 
-    def _make_url_variants(self, url):
+    @classmethod
+    def make_url_variants(cls, url):
         urls = [url]
 
         # http -> https
@@ -61,7 +62,7 @@ class OARRClient(object):
         return urls
 
     def get_by_url(self, url):
-        variants = self._make_url_variants(url)
+        variants = self.make_url_variants(url)
         qry = {
             "query":{
                 "terms": {
@@ -298,6 +299,19 @@ class Register(object):
                 self.set_metadata_value("repository_type", existing, lang)
 
     @property
+    def content_type(self):
+        return self.get_metadata_value("content_type")
+
+    def add_content_type(self, val, lang="en"):
+        existing = self.get_metadata_value("content_type", lang)
+        if existing is None:
+            self.set_metadata_value("content_type", [val], lang)
+        else:
+            if val not in existing:
+                existing.append(val)
+                self.set_metadata_value("content_type", existing, lang)
+
+    @property
     def software(self):
         sw = self.register.get("software", [])
         l = []
@@ -329,6 +343,10 @@ class Register(object):
             self.raw["register"]["organisation"] = []
         self.raw["register"]["organisation"].append(org_obj)
 
+    @property
+    def organisation(self):
+        return self.raw.get("register", {}).get("organisation", [])
+
     def add_contact_object(self, contact_obj):
         """
         org obj needs to conform to the correct structure.  Do we
@@ -340,6 +358,10 @@ class Register(object):
         if "contact" not in self.raw["register"]:
             self.raw["register"]["contact"] = []
         self.raw["register"]["contact"].append(contact_obj)
+
+    @property
+    def contact(self):
+        return self.raw.get("register", {}).get("contact", [])
 
     def add_api_object(self, api_obj):
         """
@@ -365,7 +387,7 @@ class Register(object):
             if type is None:
                 matches.append(api)
             else:
-                if api.get("type") == type:
+                if api.get("api_type") == type:
                     matches.append(api)
         return matches
 
@@ -494,13 +516,21 @@ class Register(object):
         self.raw["register"]["metadata"].append(md)
         return md
 
+    def set_admin_object(self, third_party, obj):
+        if obj is None: return
+        if "admin" not in self.raw:
+            self.raw["admin"] = {}
+        self.raw["admin"][third_party] = obj
+
+    def get_admin(self, third_party):
+        return self.raw.get("admin", {}).get(third_party)
 
     def id_part(self, info_uri):
         if info_uri.startswith("info:oarr:"):
             return info_uri[10:]
         return info_uri
 
-    def merge_register(self, new_reg):
+    def simple_merge_register(self, new_reg):
         # merge the top level elements in the register
         register = new_reg.get("register", {})
         for k, v in register.iteritems():

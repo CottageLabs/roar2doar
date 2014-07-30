@@ -6,6 +6,7 @@ from roar2doar.core import app
 from roar2doar import oarr
 
 NS = "{http://eprints.org/ep2/data/2.0}"
+APP_NAME = app.config.get("OARR_APP_NAME")
 
 h = HTMLParser.HTMLParser()
 
@@ -240,7 +241,7 @@ def xwalk(repo):
     record = {
         "register" : register,
         "admin" : {
-            "roar2doar" : roar
+            APP_NAME : roar
         }
     }
     reg = oarr.Register(record)
@@ -262,6 +263,96 @@ def xwalk(repo):
 
     return reg, stats
 
+def _do_md_patch(original, new, field, append_list=False, doar_over_roar=True):
+    oval = original.get_metadata_value(field)
+    nval = new.get_metadata_value(field)
+
+    if append_list:
+        if oval is not None and nval is not None:
+            pval = list(set(oval + nval))
+            original.set_metadata_value(field, pval)
+        elif oval is None and nval is not None:
+            original.set_metadata_value(field, deepcopy(nval))
+    elif doar_over_roar:
+        if oval is None and nval is not None:
+            original.set_metadata_value(field, nval)
+
+def _do_api_patch(original, new, api_type):
+    cbases = [a.get("base_url") for a in original.get_api(api_type) if a.get("base_url") is not None]
+    napis = new.get_api(api_type)
+    for napi in napis:
+        nbase = napi.get("base_url")
+        if nbase in cbases:
+            continue
+        original.add_api_object(deepcopy(napi))
+
+def patch(original, new):
+    # repository_type -> append to list (deduplicated)
+    _do_md_patch(original, new, "repository_type", append_list=True)
+
+    # content_type -> append to list (deduplicated)
+    _do_md_patch(original, new, "content_type", append_list=True)
+
+    # operational_status -> prefer doar over roar
+    if original.operational_status is None and new.operational_status is not None:
+        original.operational_status = new.operational_status
+
+    # contacts -> keep the contact if their email is not already know, else discard
+    oemails = [c.get("details", {}).get("email") for c in original.contact if c.get("details", {}).get("email") is not None]
+    ncontacts = new.contact
+    for ncont in ncontacts:
+        nemail = ncont.get("details", {}).get("email")
+        if nemail is not None and nemail in oemails:
+            continue
+        original.add_contact_object(deepcopy(ncont))
+
+    # name -> prefer doar over roar
+    if original.repo_name is None and new.repo_name is not None:
+        original.repo_name = new.repo_name
+
+    # oai-pmh -> keep the entry if the base url is not already known
+    _do_api_patch(original, new, "oai-pmh")
+
+    # sword -> keep the entry if the base url is not already known
+    _do_api_patch(original, new, "sword")
+
+    # rss -> keep the entry if the base url is not already known
+    _do_api_patch(original, new, "rss")
+
+    # twitter -> prefer doar over roar
+    _do_md_patch(original, new, "twitter")
+
+    # description -> prefer doar over roar
+    _do_md_patch(original, new, "description")
+
+    # organisation -> keep the org if their url is not already known, else discard
+    ourls = [o.get("details", {}).get("url") for o in original.organisation if o.get("details", {}).get("url") is not None]
+    ourlvars = []
+    for ourl in ourls:
+        vars = oarr.OARRClient.make_url_variants(ourl)
+        ourlvars += vars
+    ourlvars = list(set(ourlvars))
+
+    norgs = new.organisation
+    for norg in norgs:
+        nurl = norg.get("details", {}).get("url")
+        if nurl is not None and nurl in ourlvars:
+            continue
+        original.add_organisation_object(deepcopy(norg))
+
+    # country_code -> prefer doar over roar
+    if original.country_code is None and new.country_code is not None:
+        original.set_country(code=new.country_code)
+
+    # software -> if (normalised) name different keep, else discard
+    onames = [name.strip().lower() for name, version, url in original.software if name is not None]
+    nsoft = new.software
+    for nname, nver, nurl in nsoft:
+        if nname is not None:
+            if nname.strip().lower() in onames:
+                continue
+            original.add_software(nname, nver, nurl)
+
 def run():
     rawlist = app.config.get("RAWLIST")
     resp = requests.get(rawlist)
@@ -282,10 +373,16 @@ def run():
         record_id = None
         if existing is not None:
             print "updating ", existing.id
-            # this is a very basic merge - a more advanced version is probably required for this module
-            reg.merge_register(existing.raw) # taking the existing record as the authority
+            patch(existing, reg)
+            existing.set_admin_object(APP_NAME, reg.get_admin(APP_NAME))
             record_id = existing.id
+            reg = existing
+
         record_id = client.save_record(reg.raw, record_id)
+
+        if record_id is not None and not record_id:
+            print "error saving"
+            break
 
         print stats
         for stat in stats:
