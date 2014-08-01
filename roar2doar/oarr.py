@@ -1,4 +1,4 @@
-import requests, json, pycountry
+import requests, json, pycountry, urllib
 from copy import deepcopy
 from datetime import datetime
 
@@ -120,7 +120,7 @@ class OARRClient(object):
             "size":1000
         }
         try:
-            resp = requests.get(self.base_url + "/query?source=" + json.dumps(qry))
+            resp = requests.get(self.base_url + "/query?source=" + urllib.quote_plus(json.dumps(qry)))
             return Org(resp.json(), org)
         except:
             return None
@@ -130,7 +130,7 @@ class OARRClient(object):
             qry = {'query':{'match_all':{}},'size': 0,'facets':{}}
 
         try:
-            resp = requests.get(self.base_url + "/query?source=" + json.dumps(qry) )
+            resp = requests.get(self.base_url + "/query?source=" + urllib.quote_plus(json.dumps(qry)) )
             return resp.json()
         except:
             return {}

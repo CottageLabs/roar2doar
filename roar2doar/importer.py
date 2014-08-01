@@ -96,6 +96,39 @@ def _list_extract(repo, field, target_list, target_field=None, object_template=N
                         return
                     target_list.append(val)
 
+def get_stats(repo):
+    # first get the last modified date of this record, so we have a place to measure our stats from
+    lm = repo.find(NS + "lastmod")
+    if lm is None:
+        return False
+    nd = _normalise_date(lm.text)
+    dt = datetime.strptime(nd, "%Y-%m-%dT%H:%M:%SZ")
+
+    # get the current record count
+    current_stat = None
+    rc = repo.find(NS + "recordcount")
+    if rc is not None and rc.text is not None:
+        count = int(rc.text)
+        current_stat = {"value" : count, "type" : "item_count", "date" : nd}
+
+    # extract the historical stats from the recordhistory elemenet.  We assume that each
+    # entry is in increments of 1 year back from the last updated date.  This is probably not
+    # strictly true, but in the absence of better information ...
+    old_stats = []
+    rh = repo.find(NS + "recordhistory")
+    if rh is not None:
+        history = rh.text
+        counts = [int(h) for h in history.split(",")]
+        for i in range(len(counts) - 1, -1, -1):
+            if counts[i] == 0:
+                break
+            offset = len(counts) - i - 1
+            thisyear = dt - timedelta(days=offset * 365)
+            thedate = thisyear.strftime("%Y-%m-%d")
+            stat = {"value" :  counts[i], "type" : "item_count", "date" : thedate}
+            old_stats.append(stat)
+
+    return old_stats, current_stat
 
 def xwalk(repo):
     # the various components we need to assemble
@@ -109,7 +142,6 @@ def xwalk(repo):
     register = {}
     software = {}
     subjects = []
-    stats = []
 
     # roar id
     _extract(repo, "eprintid", roar, "roar_id")
@@ -246,22 +278,7 @@ def xwalk(repo):
     }
     reg = oarr.Register(record)
 
-    rh = repo.find(NS + "recordhistory")
-    if rh is not None:
-        history = rh.text
-        counts = [int(h) for h in history.split(",")]
-        lm = roar.get("last_modified")
-        dt = datetime.strptime(lm, "%Y-%m-%dT%H:%M:%SZ")
-        for i in range(len(counts) - 1, -1, -1):
-            if counts[i] == 0:
-                break
-            offset = len(counts) - i - 1
-            thisyear = dt - timedelta(days=offset * 365)
-            thedate = thisyear.strftime("%Y-%m-%d")
-            stat = {"value" :  counts[i], "type" : "item_count", "date" : thedate}
-            stats.append(stat)
-
-    return reg, stats
+    return reg
 
 def _do_md_patch(original, new, field, append_list=False, doar_over_roar=True):
     oval = original.get_metadata_value(field)
@@ -353,23 +370,64 @@ def patch(original, new):
                 continue
             original.add_software(nname, nver, nurl)
 
+def should_update(repo, client):
+    lm = repo.find(NS + "lastmod")
+    hp = repo.find(NS + "home_page")
+
+    if lm is None or hp is None:
+        return False, None
+
+    nd = _normalise_date(lm.text)
+    dt = datetime.strptime(nd, "%Y-%m-%dT%H:%M:%SZ")
+
+    url = hp.text
+    reg = client.get_by_url(url)
+
+    if reg is None:
+        return True, None
+
+    r2d = reg.get_admin(app.config.get("OARR_APP_NAME"))
+    if r2d is None:
+        return True, reg
+
+    r2dlm = r2d.get("last_modified")
+    if r2dlm is None:
+        return True, reg
+
+    rdt = datetime.strptime(reg.last_updated, "%Y-%m-%dT%H:%M:%SZ")
+    if rdt < dt:
+        return True, reg
+
+    return False, None
+
+
 def run():
+    # pull everything in from the rawlist and load the xml
     rawlist = app.config.get("RAWLIST")
     resp = requests.get(rawlist)
     xml = etree.fromstring(resp.text[39:]) # have to omit the encoding for reasons known only to lxml
     repositories = xml.findall(".//" + NS + "eprint")
-    limit = 4000
-    i = 0
+
+    # create an instance of the client for OARR for re-use
     client = oarr.OARRClient(app.config.get("OARR_BASE_URL"), app.config.get("OARR_API_KEY"))
+
     for repo in repositories:
-        reg, stats = xwalk(repo)
+        # decide if we are going to try to import this record at all
+        should, existing = should_update(repo, client)
+        if not should:
+            print "repository has not been updated since last run - skipping"
+            continue
+
+        # if we get to here, we want to do the xwalk, so do the registry data first
+        reg = xwalk(repo)
         print reg.raw
 
+        # if there's no repo url, then we don't bother to go any further
         if reg.repo_url is None or reg.repo_url == "":
             print "No Repository URL - skipping"
             continue
 
-        existing = client.get_by_url(reg.repo_url)
+        # record_id may be None, or it may exist if there is already a record for this url
         record_id = None
         if existing is not None:
             print "updating ", existing.id
@@ -378,18 +436,23 @@ def run():
             record_id = existing.id
             reg = existing
 
+        # save the new or patched record (record_id may still be None)
         record_id = client.save_record(reg.raw, record_id)
 
         if record_id is not None and not record_id:
             print "error saving"
             break
 
-        print stats
-        for stat in stats:
-            client.save_statistic(stat, record_id)
-
-        if i >= limit: break
-        i += 1
+        historical_stats, current_stat = get_stats(repo)
+        if existing is not None:
+            # add the new stat
+            print current_stat
+            client.save_statistic(current_stat, record_id)
+        else:
+            # add the historic stats
+            print historical_stats
+            for stat in historical_stats:
+                client.save_statistic(stat, record_id)
 
 
 if __name__ == "__main__":

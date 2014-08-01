@@ -140,3 +140,6 @@ class TestSnapshot(TestCase):
 
         assert doar.country_code == "FR"
         assert doar.country == "France"
+
+    def test_03_update(self):
+        pass
